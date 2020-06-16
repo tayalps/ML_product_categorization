@@ -15,17 +15,11 @@ gprtdecmaxtokens = 2
 gprtmaxdigits = 3
 gpartitionprob = 0.8
 
-dummydataframe <- function()
-{
-  return (data.frame(matrix(ncol=0,nrow=0)))
-}
 
-dirname = "C:/PraveenTayal/Part_attr_mapping/"
+dirname = "C:/PraveenTayal/GL_Analytics_Pandit/"
 setwd(dirname)
-trainfilename = 'Train.csv'
-testfilename = 'Test.csv'
 
-df=read.csv("Teamcenter Attributes for Analysis Clean orig_25_8_weedout_OP01.csv", 
+df=read.csv("annonymized_data_gl.csv", 
             header=T, na.strings=c("","NA"), stringsAsFactors = FALSE)
 dim(df)
 str(df)
@@ -33,8 +27,13 @@ str(df)
 df$X = NULL
 summary(df)
 
-#check NA
-print (sum(is.na(df$Part.Description)))
+#check NA in Product description
+print (sum(is.na(df$Product.Description)))
+
+#--- Utility functions
+dummydataframe <- function() {
+  return (data.frame(matrix(ncol=0,nrow=0)))
+}
 
 CountWords<-function(x){
   str_count(x, '\\w+')
@@ -61,8 +60,9 @@ model.predict.accu<-function(model, df){
   acc = sum(A[row(A)==col(A)])/nrow(df)
   return (acc)
 }
+# ---- Function library ends
 
-prt_dec_col = df$Part.Description
+prt_dec_col = df$Product.Description
 prt_dec_col = str_replace_all(prt_dec_col, "[^a-zA-Z#]", " ") #keep all alpha numeric
 prt_dec_col = str_replace_all(prt_dec_col, "[[:punct:]]", " ") #remove all punctuations
 prt_dec_col = str_squish(prt_dec_col) # remove extra spaces
@@ -138,7 +138,8 @@ prt_dec_col.modif = sapply(1:length(prt_dec_col), function(i){
     rowscores = c(rowscores, tdmscore)
     row.word = c(row.word, word)
   }
-  word.high.tfidf = head(row.word[order(rowscores, decreasing=TRUE)],gprtdecmaxtokens)
+  word.high.tfidf = head(row.word[order(rowscores, decreasing=TRUE)],
+                         gprtdecmaxtokens)
   return(paste(word.high.tfidf, collapse = "_"))
 }, USE.NAMES = FALSE)
 
@@ -147,13 +148,13 @@ head(prt_dec_col.modif,10)
 length(unique(prt_dec_col.modif))
 
 ##dataframe
-df$Part.Description = prt_dec_col.modif#update the dataframe with simplified value
+df$Product.Description = prt_dec_col.modif#update the dataframe with simplified value
 str(df)
 rm(tdm.df, prt_dec_col.modif)
 gc()
 
 ##now treat the Part nos
-prt_names_col = df$Part
+prt_names_col = df$Product.No
 prt_names_col.modif = sapply(prt_names_col, function(x){
   val = gsub(pattern = "\\-",replacement = "",x = x)
   substr(val, 1, gprtmaxdigits) #take only firt 3 digits and siplify
@@ -161,13 +162,13 @@ prt_names_col.modif = sapply(prt_names_col, function(x){
 
 str(prt_names_col.modif)
 length(unique(prt_names_col.modif))
-df$Part = prt_names_col.modif #update the dataframe with simplified value
+df$Product.No = prt_names_col.modif #update the dataframe with simplified value
 
 ##setup for multiclassification
 X = df
-X$AERO.SAP.Product.Type = NULL
+X$Category = NULL
 #outcome variable
-Y = df$AERO.SAP.Product.Type
+Y = df$Category
 rm(prt_names_col, prt_names_col.modif, df)
 gc()
 
@@ -188,7 +189,6 @@ train <- df.modif[ train.index,]
 test  <- df.modif[-train.index,]
 dim(train)
 dim(test)
-str(test)
 
 svm1 <- svm(Y~., data=train, 
             method="C-classification", kernal="radial", 
@@ -196,15 +196,6 @@ svm1 <- svm(Y~., data=train,
 summary(svm1)
 cat ("train accr = " , model.predict.accu(svm1, train))
 cat ("test accr =", model.predict.accu(svm1, test))
-
-
-
-
-
-
-
-
-
 
 
 
@@ -222,7 +213,9 @@ suppressPackageStartupMessages({
   library(tidytext)
   library(tm)
   library(caret)
-  library(e1071)  
+  library(e1071) 
+  library(gbm)
+  library(randomForest)
   library(ggplot2)
 })
 
@@ -231,25 +224,28 @@ gprtdecmaxtokens = 2
 gprtmaxdigits = 3
 gpartitionprob = 0.8
 ghighcorrthreshold = 0.9
+gruncorr = 1
 
-dummydataframe <- function(){
-  return (data.frame(matrix(ncol=0,nrow=0)))
-}
-
-dirname = "C:/PraveenTayal/Part_attr_mapping/"
+dirname = "C:/PraveenTayal/GL_Analytics_Pandit/"
 setwd(dirname)
 
-df=read.csv("Teamcenter Attributes for Analysis Clean orig_25_8_weedout_OP01.csv", 
+df=read.csv("annonymized_data_gl.csv", 
             header=T, na.strings=c("","NA"), stringsAsFactors = FALSE)
+
 dim(df)
 str(df)
 #drop X (un nammed column)
 df$X = NULL
 summary(df)
 
-#check NA
-print (sum(is.na(df$Part.Description)))
+#check NA in Product description feature
+nlevels(as.factor(df$Category))
+print (sum(is.na(df$Product.Description)))
 
+#--- Utility functions
+dummydataframe <- function(){
+  return (data.frame(matrix(ncol=0,nrow=0)))
+}
 CountWords<-function(x){
   str_count(x, '\\w+')
 }
@@ -294,9 +290,9 @@ FillNAWithMean<-function(data){
   }
   return (data)  
 }
+# ---- Function library ends
 
-
-prt_dec_col = df$Part.Description
+prt_dec_col = df$Product.Description
 prt_dec_col = str_replace_all(prt_dec_col, "[^a-zA-Z#]", " ") #keep all alpha numeric
 prt_dec_col = str_replace_all(prt_dec_col, "[[:punct:]]", " ") #remove all punctuations
 prt_dec_col = str_squish(prt_dec_col) # remove extra spaces
@@ -362,14 +358,21 @@ gc()
 
 
 tdm.df.feat.score.sum <- apply(tdm.df, 1, sum)
-#tdm.df.feat.score.avg <- apply(tdm.df, 1, mean)
-#tdm.df.feat.score.max <- apply(tdm.df, 1, max)
+tdm.df.feat.score.avg <- apply(tdm.df, 1, mean) #for experimentation
+tdm.df.feat.score.max <- apply(tdm.df, 1, max) #for experimentation
+
+##Students can experiment with the following experiments in the code
+##sinippet below
+#tdmscore = tdm.df.feat.score.sum[word] OR
+#tdmscore = tdm.df.feat.score.avg[word] OR
+#tdmscore = tdm.df.feat.score.max[word] OR
+#tdmscore = tdm.df[word, i]
 
 prt_dec_col.modif = sapply(1:length(prt_dec_col), function(i){
   rowscores = c()
   row.word = c()
   for (word in strsplit(prt_dec_col[i], " ")){
-    tdmscore = tdm.df.feat.score.sum[word]#tdm.df[word, i]
+    tdmscore = tdm.df.feat.score.sum[word]
     rowscores = c(rowscores, tdmscore)
     row.word = c(row.word, word)
   }
@@ -383,13 +386,13 @@ head(prt_dec_col.modif,10)
 length(unique(prt_dec_col.modif))
 
 ##dataframe
-df$Part.Description = prt_dec_col.modif#update the dataframe with simplified value
+df$Product.Description = prt_dec_col.modif#update the dataframe with simplified value
 str(df)
 rm(tdm.df, prt_dec_col.modif)
 gc()
 
 ##now treat the Part nos
-prt_names_col = df$Part
+prt_names_col = df$Product.No
 prt_names_col.modif = sapply(prt_names_col, function(x){
   val = gsub(pattern = "\\-",replacement = "",x = x)
   substr(val, 1, gprtmaxdigits) #take only firt 3 digits and siplify
@@ -397,18 +400,18 @@ prt_names_col.modif = sapply(prt_names_col, function(x){
 
 str(prt_names_col.modif)
 length(unique(prt_names_col.modif))
-df$Part = prt_names_col.modif #update the dataframe with simplified value
+df$Product.No = prt_names_col.modif #update the dataframe with simplified value
 
 ##setup for multiclassification
 X = df
-X$AERO.SAP.Product.Type = NULL
+X$Category = NULL
 Xcolnames = colnames(X)
 
 #outcome variable
-outcome = df$AERO.SAP.Product.Type
+outcome = df$Category
 rm(prt_names_col, prt_names_col.modif, df)
 gc()
-
+levels(as.factor(outcome))
 ##
 # work on mean encoding
 ##
@@ -424,15 +427,16 @@ colnames(Y.onehot) = sapply(colnames(Y.onehot), function(x){
 }, USE.NAMES = FALSE)
 
 #add this with the original dataframe
-df.modif = cbind(X, Y.onehot)
+df.modif = X#cbind(X, Y.onehot)
 df.modif$Y = as.factor(outcome)
 for(v in Xcolnames) {
-  df.modif[[v]] <- as.factor(df.modif[[v]])
+  df.modif[[v]] <- as.factor(df.modif[[v]]) # convert the char to factors
 }
 
 dim(df.modif)
 str(df.modif)
 
+#create the train and test sets for modeling
 set.seed(2106)
 train.index <- createDataPartition(df.modif$Y, p = gpartitionprob, list = FALSE)
 train <- df.modif[ train.index,]
@@ -440,19 +444,22 @@ test  <- df.modif[-train.index,]
 dim(train)
 dim(test)
 
-for (y in colnames(Y.onehot)){
+#now create the mean encoding - only for training
+#and use that as prior for test dataset to avoid
+#data leakage
+for (y in colnames(Y.onehot)){ #loop every categories
   print(y)
-  for (x in colnames(X)){
-    print(x)
+  for (x in colnames(X)){ #loop every dependent columns
+    #calculate mean for train dataset
     lookup = train %>%
       group_by_at(vars(x)) %>%
       summarise_at(vars(y), list(tot = mean))
     
-    lookup$tot = jitter(lookup$tot)
-    train = left_join(train, lookup)
-    test = left_join(test, lookup)
+    lookup$tot = (jitter(lookup$tot)) #add some noise - prevent overfitting
+    train = left_join(train, lookup) #apply mean encoding
+    test = left_join(test, lookup) # use train encoding in test
     
-    newy = paste0(x, "_", y)
+    newy = paste0(x, "_", y) #create a new column for encoded per category
     train[newy] = train$tot
     test[newy] = test$tot
     
@@ -465,8 +472,8 @@ dim(test)
 
 
 #remove Y.onehot columns from it now
-train[ ,dput(colnames(Y.onehot))] <- list(NULL)
-test[ ,dput(colnames(Y.onehot))] <- list(NULL)
+#train[ ,dput(colnames(Y.onehot))] <- list(NULL)
+#test[ ,dput(colnames(Y.onehot))] <- list(NULL)
 
 if (sum(is.na(test)) > 0){
   test = FillNAWithMean(test)
@@ -478,8 +485,9 @@ dim(test)
 rm(X, Y.dmy, Y.onehot)
 gc()
 
-
-if (1){
+# find the correlations among the numeric dependent features
+# to avoid multicolinearity and reduce the feature space further
+if (gruncorr){
   dropcols=c()
   
   train1 = train %>% 
@@ -502,14 +510,17 @@ if (1){
 dim(train)
 dim(test)
 
-#apply scaling
+#apply scaling on numeric features - critical step for distance based algorithms
 pp = preProcess(train, method = "center")
 train_std = predict(pp, train)
 
+#the grid search can be applied to optimize the results of SVM
+#currently this action is left to the students
+#Students can try the nnet, KNN and other distance based techniques and practice
 svm1 <- svm(Y~., data=train_std, 
             method="C-classification", kernal="radial", 
             gamma=0.1, cost=10)
-summary(svm1)
+
 cat ("train accr = " , model.predict.accu(svm1, train_std))
 
 test_std = predict(pp, test)
@@ -522,7 +533,6 @@ dim(train)
 trainformula <- as.formula(paste('Y',
                                  paste(names(train[, !(names(train) %in% c("Y", Xcolnames))]),collapse=' + '),
                                  sep=' ~ '))
-library(randomForest)
 set.seed(2106)
 tree.rf = randomForest(formula= trainformula, data =train,
                        importance = TRUE,
@@ -531,17 +541,12 @@ tree.rf = randomForest(formula= trainformula, data =train,
                        strata = as.factor(train$Y),
                        keep.inbag = TRUE)
 print(tree.rf)
-
-predict.score.rf <- predict(tree.rf, newdata =train)
-with(train, table(Y, predict.score.rf))
-
 cat ("train accr = " , model.predict.accu(tree.rf, train))
 cat ("test accr = " , model.predict.accu(tree.rf, test))
-varImpPlot(tree.rf)
+
 ##
 #Create GBM model
 ##
-library(gbm)
 ntrees = 100
 gbm_model1 <- gbm(formula = trainformula, data = train, 
                   distribution = "multinomial", n.trees = ntrees,
@@ -550,6 +555,3 @@ gbm_model1 <- gbm(formula = trainformula, data = train,
 summary(gbm_model1)
 cat ("train accr = " , GBMModel.predict.accu(gbm_model1, train, ntrees))
 cat ("test accr = " , GBMModel.predict.accu(gbm_model1, test, ntrees))
-varImp(gbm_model1)
-
-
