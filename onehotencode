@@ -1,0 +1,307 @@
+suppressPackageStartupMessages({
+  library(FeatureHashing)
+  library(dplyr)
+  library(stringr)
+  library(qdap)
+  library(tidytext)
+  library(tm)
+  library(caret)
+  library(e1071)  
+  library(ggplot2)
+})
+
+gminwordlen = 4
+gprtdecmaxtokens = 2
+gprtmaxdigits = 3
+gpartitionprob = 0.8
+
+dummydataframe <- function()
+{
+  return (data.frame(matrix(ncol=0,nrow=0)))
+}
+
+dirname = "C:/PraveenTayal/Part_attr_mapping/"
+setwd(dirname)
+
+df=read.csv("Teamcenter Attributes for Analysis Clean orig_25_8_weedout_OP01.csv", 
+            header=T, na.strings=c("","NA"), stringsAsFactors = FALSE)
+dim(df)
+str(df)
+#drop X (un nammed column)
+df$X = NULL
+summary(df)
+
+#check NA
+print (sum(is.na(df$Part.Description)))
+
+CountWords<-function(x){
+  str_count(x, '\\w+')
+}
+
+UniqueWords<-function(x){ #remove short len words (<=3)
+  unique(unlist(strsplit(x, " ")))
+}
+
+RemoveShortWords<-function(x){ #remove short len words (<=3)
+  y = unlist(strsplit(x, " ")) #lower the case
+  paste(y[nchar(y)>=gminwordlen], collapse=" ")
+}
+
+RemoveStopWords<-function(x){ 
+  x = unlist(rm_stopwords(x, tm::stopwords("english")))
+  paste(x, collapse=" ")
+}
+
+model.predict.accu<-function(model, df){
+  prediction <- predict(model, df)
+  xtab <- table(df$Y, prediction)
+  A=as.matrix(xtab)
+  acc = sum(A[row(A)==col(A)])/nrow(df)
+  return (acc)
+}
+
+model.predict.onevsall.metrics <- function(model, df, predictions) {
+  
+  cm <- vector("list", length(levels(df$Y)))
+  for (i in seq_along(cm)) {
+    positive.class <- levels(df$Y)[i]
+    # in the i-th iteration, use the i-th class as the positive class
+    cm[[i]] <- confusionMatrix(predictions, df$Y, 
+                               positive = positive.class)
+  }
+  
+  c <- cm[[1]]$byClass # a single matrix is sufficient
+  re <- sum(c[, "Recall"]) / nrow(c)
+  pr <- sum(c[, "Precision"]) / nrow(c)
+  acc <- sum(c[, "Balanced Accuracy"]) / nrow(c)
+  f1 <- 2 * ((re * pr) / (re + pr))
+  print(paste0("Macro F1 is: ", round(f1, 2)))
+  
+  acc2 = length(which(predictions == df$Y)) / length(df$Y)
+  print(paste0("Macro Accuracy is: ", round(acc, 2), ", ", round(acc2, 2)))
+  
+  metrics <- c("Balanced Accuracy", "Precision", "Recall", "F1")
+  print("Classwise metrics is - ")
+  print(cm[[1]]$byClass[, metrics])
+}
+
+model.predict.macro.metrics <- function(model, df, predictions){
+  
+  
+}
+
+prt_dec_col = df$Part.Description
+prt_dec_col = str_replace_all(prt_dec_col, "[^a-zA-Z#]", " ") #keep all alpha numeric
+prt_dec_col = str_replace_all(prt_dec_col, "[[:punct:]]", " ") #remove all punctuations
+prt_dec_col = str_squish(prt_dec_col) # remove extra spaces
+prt_dec_col = sapply(prt_dec_col, tolower, USE.NAMES = FALSE)
+prt_dec_col = sapply(prt_dec_col, UniqueWords, USE.NAMES = FALSE)
+prt_dec_col = sapply(prt_dec_col, RemoveShortWords, USE.NAMES = FALSE)
+prt_dec_col = sapply(prt_dec_col, RemoveStopWords, USE.NAMES = FALSE)
+prt_dec_col[prt_dec_col==""] = "short_words_misc"
+str(prt_dec_col)
+
+
+#lets count the number of words and look at some stats
+prt_dec_col.nwords = sapply(prt_dec_col, CountWords, USE.NAMES = FALSE)
+
+str(prt_dec_col.nwords)
+boxplot(prt_dec_col.nwords)
+
+#now get all the words and their counts or frequencies
+prt_dec_col.all.words = prt_dec_col %>% 
+  sapply(.,paste0,collapse=" ", USE.NAMES = FALSE) %>% 
+  strsplit(., " ") %>% 
+  unlist() 
+  
+prt_dec_col.word.freq = table(prt_dec_col.all.words)
+#create a dataframe
+all.words.freq.df = cbind(names(prt_dec_col.word.freq),
+                     as.integer(prt_dec_col.word.freq)) %>% 
+  data.frame() %>%
+  rename(
+    word.name = X1,
+    word.freq = X2
+  )
+
+all.words.freq.df$word.name = as.character(all.words.freq.df$word.name)
+all.words.freq.df$word.freq = as.integer(as.character(
+  all.words.freq.df$word.freq))
+
+str(all.words.freq.df)
+
+all.words.freq.df %>% 
+  arrange(desc(word.freq)) %>% 
+  slice(1:20) %>%
+  ggplot(., aes(x= reorder(word.name, -word.freq), y=word.freq))+
+  geom_bar(stat='identity',color='skyblue',fill='steelblue') + 
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+
+#calculate tfidf
+tdm = TermDocumentMatrix(Corpus(VectorSource(prt_dec_col)),
+                         control = list(weighting = weightTfIdf))
+
+freq=rowSums(as.matrix(tdm)) %>%
+  sort(., decreasing = T)
+head(freq,10)
+plot(sort(freq, decreasing = T),
+     col="blue",main="Word TF-IDF frequencies", 
+     xlab="TF-IDF-based rank", ylab = "TF-IDF")
+feature.names=rownames(as.data.frame(freq))
+#now we have tfidf score for every word in each row
+#lets find the two words that have max scores
+tdm.df = as.data.frame(as.matrix(tdm)) 
+rm(all.words.freq.df, tdm)
+gc()
+
+tdm.df.feat.score.max <- apply(tdm.df, 1, max)
+tdm.df.feat.score.sum <- apply(tdm.df, 1, sum)
+tdm.df.feat.score.avg <- apply(tdm.df, 1, mean)
+
+prt_dec_col.modif = sapply(1:length(prt_dec_col), function(i){
+  rowscores = c()
+  row.word = c()
+  for (word in strsplit(prt_dec_col[i], " ")){
+    tdmscore = tdm.df.feat.score.sum[word]#tdm.df[word, i]
+    rowscores = c(rowscores, tdmscore)
+    row.word = c(row.word, word)
+  }
+  word.high.tfidf = head(row.word[order(rowscores, decreasing=TRUE)],
+                         gprtdecmaxtokens)
+  return(paste(word.high.tfidf, collapse = "_"))
+}, USE.NAMES = FALSE)
+
+str(prt_dec_col.modif)
+head(prt_dec_col.modif,10)
+length(unique(prt_dec_col.modif))
+
+##dataframe
+df$Part.Description = prt_dec_col.modif#update the dataframe with simplified value
+str(df)
+rm(tdm.df, prt_dec_col.modif)
+gc()
+
+##now treat the Part nos
+prt_names_col = df$Part
+prt_names_col.modif = sapply(prt_names_col, function(x){
+  val = gsub(pattern = "\\-",replacement = "",x = x)
+  substr(val, 1, gprtmaxdigits) #take only firt 3 digits and siplify
+}, USE.NAMES = FALSE)
+
+str(prt_names_col.modif)
+length(unique(prt_names_col.modif))
+df$Part = prt_names_col.modif #update the dataframe with simplified value
+
+##setup for multiclassification
+X = df
+X$AERO.SAP.Product.Type = NULL
+#outcome variable
+Y = df$AERO.SAP.Product.Type
+rm(prt_names_col, prt_names_col.modif, df)
+gc()
+
+#dummify all the categories in X
+X.dmy <- dummyVars(" ~ .", data = X)
+X.onehot <- data.frame(predict(X.dmy, newdata = X))
+dim(X.onehot)
+
+#Join the X one hot encode n Y
+df.modif = X.onehot
+df.modif$Y = as.factor(Y)
+rm(X, X.dmy, X.onehot)
+gc()
+
+set.seed(2106)
+train.index <- createDataPartition(df.modif$Y, p = gpartitionprob, list = FALSE)
+train <- df.modif[ train.index,]
+test  <- df.modif[-train.index,]
+dim(train)
+dim(test)
+str(test)
+
+#lets apply the chi square test for feature selection
+trainX = train
+trainX$Y = NULL
+
+#check important variables using chi square test
+impdependentfeat = c()
+for (onehotcol in colnames(trainX)){
+  obs = table(trainX[, onehotcol], train$Y)
+  test = chisq.test(obs, simulate.p.value = TRUE)
+  print(paste0(onehotcol, " ", test$p.value))
+  if(test$p.value < .05){ #check outcome dependency
+    impdependentfeat = c(impdependentfeat, onehotcol)
+  }
+}
+
+length(impdependentfeat)
+
+impdependentfeat2 = c()
+constfeats = c()
+for (onehotcol in colnames(trainX)){
+  obs = table(trainX[, onehotcol], train$Y)
+  if (dim(obs)[1] > 1){
+    test = fisher.test(obs, simulate.p.value=TRUE)
+    print(paste0(onehotcol, " ", test$p.value))
+    if(test$p.value < .05){ #check outcome dependency
+      impdependentfeat2 = c(impdependentfeat2, onehotcol)
+    }
+  }
+  else {
+    constfeats = c(constfeats, onehotcol)
+  }
+}
+
+length(impdependentfeat2)
+length(constfeats)
+
+impfeats.fisher.colnames = setdiff(impdependentfeat2 , constfeats)
+impfeats.chisq.colnames = setdiff(impdependentfeat , constfeats)
+
+length(impfeats.fisher.colnames)
+length(impfeats.chisq.colnames)
+
+##subset the col
+train = train[, c(impfeats.fisher.colnames, "Y")]
+test = test [, c(impfeats.fisher.colnames, "Y")]
+dim(train)
+dim(test)
+
+svm1 <- svm(Y~., data=train, 
+            method="C-classification", kernal="radial", 
+            gamma=0.1, cost=10)
+summary(svm1)
+prediction_train <- predict(svm1, train)
+
+#cat ("train accr = " , model.predict.accu(svm1, train))
+#cat ("test accr =", model.predict.accu(svm1, test))
+
+model.predict.onevsall.metrics(svm1, train, prediction_train)
+
+prediction_test <- predict(svm1, test)
+model.predict.onevsall.metrics(svm1, test, prediction_test)
+
+str(train)
+
+##
+#Decision tree
+##
+trctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+set.seed(2106)
+dtree_fit <- train(Y ~., data = train, method = "rpart",
+                   parms = list(split = "gini"), #'information'
+                   trControl=trctrl,
+                   tuneLength = 10)
+#prp(dtree_fit$finalModel, faclen = 0, cex = 0.8, extra = 1)
+prp(dtree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+#draw colorful plot
+only_count <- function(x, labs, digits, varlen) {
+  paste(x$frame$n)
+}
+prp(dtree_fit$finalModel, faclen = 0, cex = 0.8, node.fun=only_count)
+
+train_pred <- predict(dtree_fit, newdata = train)
+confusionMatrix(train_pred, train$Y )
+
+test_pred <- predict(dtree_fit, newdata = test)
+confusionMatrix(test_pred, test$Y )
