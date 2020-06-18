@@ -1,0 +1,404 @@
+suppressPackageStartupMessages({
+  library(FeatureHashing)
+  library(dplyr)
+  library(stringr)
+  library(qdap)
+  library(tidytext)
+  library(tm)
+  library(caret)
+  library(e1071)  
+  library(ggplot2)
+})
+
+gminwordlen = 4
+gprtdecmaxtokens = 2
+gprtmaxdigits = 3
+gpartitionprob = 0.8
+ghighcorrthreshold = 0.9
+gruncorr = 1
+
+dummydataframe <- function(){
+  return (data.frame(matrix(ncol=0,nrow=0)))
+}
+
+dirname = "C:/PraveenTayal/Part_attr_mapping/"
+setwd(dirname)
+
+df=read.csv("Teamcenter Attributes for Analysis Clean orig_25_8_weedout_OP01.csv", 
+            header=T, na.strings=c("","NA"), stringsAsFactors = FALSE)
+dim(df)
+str(df)
+#drop X (un nammed column)
+df$X = NULL
+summary(df)
+
+#check NA
+print (sum(is.na(df$Part.Description)))
+
+CountWords<-function(x){
+  str_count(x, '\\w+')
+}
+
+UniqueWords<-function(x){ #remove short len words (<=3)
+  unique(unlist(strsplit(x, " ")))
+}
+
+RemoveShortWords<-function(x){ #remove short len words (<=3)
+  y = unlist(strsplit(x, " ")) #lower the case
+  paste(y[nchar(y)>=gminwordlen], collapse=" ")
+}
+
+RemoveStopWords<-function(x){ 
+  x = unlist(rm_stopwords(x, tm::stopwords("english")))
+  paste(x, collapse=" ")
+}
+
+model.predict.accu<-function(model, df){
+  prediction <- predict(model, df)
+  xtab <- table(df$Y, prediction)
+  A=as.matrix(xtab)
+  acc = sum(A[row(A)==col(A)])/nrow(df)
+  return (acc)
+}
+
+GBMModel.predict.accu<-function(model, df, ntrees){
+  
+  predict.class <- predict(model,  newdata=df, n.trees = ntrees,
+                         type = "response")
+  pred_class <- apply(predict.class, 1, which.max)
+  xtab <- table(df$Y, pred_class)
+  A=as.matrix(xtab)
+  acc = sum(A[row(A)==col(A)])/nrow(df)
+  return (acc)
+}
+
+#fill NA with mean
+FillNAWithMean<-function(data){
+  for(i in 1:ncol(data)) {
+    data[ , i][is.na(data[ , i])] <- mean(data[ , i], na.rm = TRUE)
+  }
+  return (data)  
+}
+
+
+prt_dec_col = df$Part.Description
+prt_dec_col = str_replace_all(prt_dec_col, "[^a-zA-Z#]", " ") #keep all alpha numeric
+prt_dec_col = str_replace_all(prt_dec_col, "[[:punct:]]", " ") #remove all punctuations
+prt_dec_col = str_squish(prt_dec_col) # remove extra spaces
+prt_dec_col = sapply(prt_dec_col, tolower, USE.NAMES = FALSE)
+prt_dec_col = sapply(prt_dec_col, UniqueWords, USE.NAMES = FALSE)
+prt_dec_col = sapply(prt_dec_col, RemoveShortWords, USE.NAMES = FALSE)
+prt_dec_col = sapply(prt_dec_col, RemoveStopWords, USE.NAMES = FALSE)
+prt_dec_col[prt_dec_col==""] = "short_words_misc"
+str(prt_dec_col)
+
+
+#lets count the number of words and look at some stats
+prt_dec_col.nwords = sapply(prt_dec_col, CountWords, USE.NAMES = FALSE)
+
+str(prt_dec_col.nwords)
+boxplot(prt_dec_col.nwords)
+
+#now get all the words and their counts or frequencies
+prt_dec_col.all.words = prt_dec_col %>% 
+  sapply(.,paste0,collapse=" ", USE.NAMES = FALSE) %>% 
+  strsplit(., " ") %>% 
+  unlist() 
+  
+prt_dec_col.word.freq = table(prt_dec_col.all.words)
+#create a dataframe
+all.words.freq.df = cbind(names(prt_dec_col.word.freq),
+                     as.integer(prt_dec_col.word.freq)) %>% 
+  data.frame() %>%
+  rename(
+    word.name = X1,
+    word.freq = X2
+  )
+
+all.words.freq.df$word.name = as.character(all.words.freq.df$word.name)
+all.words.freq.df$word.freq = as.integer(as.character(
+  all.words.freq.df$word.freq))
+
+str(all.words.freq.df)
+
+all.words.freq.df %>% 
+  arrange(desc(word.freq)) %>% 
+  slice(1:20) %>%
+  ggplot(., aes(x= reorder(word.name, -word.freq), y=word.freq))+
+  geom_bar(stat='identity',color='skyblue',fill='steelblue') + 
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+
+#calculate tfidf
+tdm = TermDocumentMatrix(Corpus(VectorSource(prt_dec_col)),
+                         control = list(weighting = weightTfIdf))
+
+freq=rowSums(as.matrix(tdm)) %>%
+  sort(., decreasing = T)
+head(freq,10)
+plot(sort(freq, decreasing = T),
+     col="blue",main="Word TF-IDF frequencies", 
+     xlab="TF-IDF-based rank", ylab = "TF-IDF")
+feature.names=rownames(as.data.frame(freq))
+#now we have tfidf score for every word in each row
+#lets find the two words that have max scores
+tdm.df = as.data.frame(as.matrix(tdm)) 
+rm(all.words.freq.df, tdm)
+gc()
+
+
+tdm.df.feat.score.sum <- apply(tdm.df, 1, sum)
+tdm.df.feat.score.avg <- apply(tdm.df, 1, mean) #for experimentation
+tdm.df.feat.score.max <- apply(tdm.df, 1, max) #for experimentation
+
+##Students can experiment with the following experiments in the code
+##sinippet below
+#tdmscore = tdm.df.feat.score.sum[word] OR
+#tdmscore = tdm.df.feat.score.avg[word] OR
+#tdmscore = tdm.df.feat.score.max[word] OR
+#tdmscore = tdm.df[word, i]
+
+prt_dec_col.modif = sapply(1:length(prt_dec_col), function(i){
+  rowscores = c()
+  row.word = c()
+  for (word in strsplit(prt_dec_col[i], " ")){
+    tdmscore = tdm.df.feat.score.sum[word]
+    rowscores = c(rowscores, tdmscore)
+    row.word = c(row.word, word)
+  }
+  word.high.tfidf = head(row.word[order(rowscores, 
+                              decreasing=TRUE)],gprtdecmaxtokens)
+  return(paste(word.high.tfidf, collapse = "_"))
+}, USE.NAMES = FALSE)
+
+str(prt_dec_col.modif)
+head(prt_dec_col.modif,10)
+length(unique(prt_dec_col.modif))
+
+##dataframe
+df$Part.Description = prt_dec_col.modif#update the dataframe with simplified value
+str(df)
+rm(tdm.df, prt_dec_col.modif)
+gc()
+
+##now treat the Part nos
+prt_names_col = df$Part
+prt_names_col.modif = sapply(prt_names_col, function(x){
+  val = gsub(pattern = "\\-",replacement = "",x = x)
+  substr(val, 1, gprtmaxdigits) #take only firt 3 digits and siplify
+}, USE.NAMES = FALSE)
+
+str(prt_names_col.modif)
+length(unique(prt_names_col.modif))
+df$Part = prt_names_col.modif #update the dataframe with simplified value
+
+##setup for multiclassification
+X = df
+X$AERO.SAP.Product.Type = NULL
+Xcolnames = colnames(X)
+
+#outcome variable
+outcome = df$AERO.SAP.Product.Type
+rm(prt_names_col, prt_names_col.modif, df)
+gc()
+
+##
+# work on mean encoding
+##
+
+#dummify all the multi lables
+Y= as.data.frame(as.factor(outcome))
+Y.dmy <- dummyVars(" ~ .", data = Y)
+Y.onehot <- data.frame(predict(Y.dmy, newdata = Y))
+dim(Y.onehot)
+#change colnames
+colnames(Y.onehot) = sapply(colnames(Y.onehot), function(x){
+  substr(x, str_length(x)-3, str_length(x))
+}, USE.NAMES = FALSE)
+
+#add this with the original dataframe
+df.modif = cbind(X, Y.onehot)
+df.modif$Y = as.factor(outcome)
+for(v in Xcolnames) {
+  df.modif[[v]] <- as.factor(df.modif[[v]]) # convert the char to factors
+}
+
+dim(df.modif)
+str(df.modif)
+
+#create the train and test sets for modeling
+set.seed(2106)
+train.index <- createDataPartition(df.modif$Y, p = gpartitionprob, list = FALSE)
+train <- df.modif[ train.index,]
+test  <- df.modif[-train.index,]
+dim(train)
+dim(test)
+
+#now create the mean encoding - only for training
+#and use that as prior for test dataset to avoid
+#data leakage
+for (y in colnames(Y.onehot)){ #loop every categories
+  print(y)
+  for (x in colnames(X)){ #loop every dependent columns
+    #calculate mean for train dataset
+    lookup = train %>%
+      group_by_at(vars(x)) %>%
+      summarise_at(vars(y), list(tot = mean))
+    
+    lookup$tot = (jitter(lookup$tot)) #add some noise - prevent overfitting
+    train = left_join(train, lookup) #apply mean encoding
+    test = left_join(test, lookup) # use train encoding in test
+    
+    newy = paste0(x, "_", y) #create a new column for encoded per category
+    train[newy] = train$tot
+    test[newy] = test$tot
+    
+    train$tot = NULL
+    test$tot = NULL
+  }
+}
+dim(train)
+dim(test)
+
+
+#remove Y.onehot columns from it now
+train[ ,dput(colnames(Y.onehot))] <- list(NULL)
+test[ ,dput(colnames(Y.onehot))] <- list(NULL)
+
+if (sum(is.na(test)) > 0){
+  test = FillNAWithMean(test)
+}
+sum(is.na(test))
+dim(train)
+dim(test)
+
+rm(X, Y.dmy, Y.onehot)
+gc()
+
+# find the correlations among the numeric dependent features
+# to avoid multicolinearity and reduce the feature space further
+if (gruncorr){
+  dropcols=c()
+  
+  train1 = train %>% 
+    select_if(is.numeric)
+  
+  correlations=round(cor(train1),2)
+  hc = findCorrelation(correlations, cutoff=ghighcorrthreshold) # put any value as a "cutoff" 
+  if (length(hc) >0){
+    train2 = train1[,-c(hc)]
+    dropcols = setdiff(colnames(train1), colnames(train2))
+    rm(train2)
+    gc()
+  }
+  rm(train1)
+  gc()
+  
+  train = train[,!(names(train) %in% dropcols)]
+  test = test[,!(names(test) %in% dropcols)]
+}
+dim(train)
+dim(test)
+
+#apply xgboost
+library("xgboost")
+# Transform the two data sets into xgb.Matrix
+xgb.train = xgb.DMatrix(data=as.matrix(select(train, 
+                                              -c("Y", all_of(Xcolnames)))),
+                        label=as.integer(train$Y)-1)
+xgb.test = xgb.DMatrix(data=as.matrix(select(test, 
+                                              -c("Y", all_of(Xcolnames)))),
+                       label=as.integer(test$Y)-1)
+
+# Define the parameters for multinomial classification
+num_class = length(levels(train$Y))
+params = list(
+  booster="gbtree",
+  eta=0.001,
+  max_depth=5,
+  gamma=3,
+  subsample=0.75,
+  colsample_bytree=1,
+  objective="multi:softprob",
+  eval_metric="mlogloss",
+  num_class=num_class
+)
+# Train the XGBoost classifer
+xgb.fit=xgb.train(
+  params=params,
+  data=xgb.train,
+  nrounds=500,
+  nthreads=1,
+  early_stopping_rounds=10,
+  watchlist=list(val1=xgb.train,val2=xgb.test),
+  verbose=1
+)
+
+xgb.pred = predict(xgb.fit,xgb.train, reshape = TRUE)
+xgb.pred = as.data.frame((xgb.pred))
+colnames(xgb.pred) = levels(train$Y)
+# Use the predicted label with the highest probability
+xgb.pred$prediction = apply(xgb.pred,1,function(x) colnames(xgb.pred)[which.max(x)])
+result = sum((xgb.pred$prediction)==(train$Y))/nrow(xgb.pred)
+
+xgb.pred = predict(xgb.fit,xgb.test, reshape = TRUE)
+xgb.pred = as.data.frame((xgb.pred))
+colnames(xgb.pred) = levels(test$Y)
+# Use the predicted label with the highest probability
+xgb.pred$prediction = apply(xgb.pred,1,function(x) colnames(xgb.pred)[which.max(x)])
+result = sum((xgb.pred$prediction)==(test$Y))/nrow(xgb.pred)
+rm(xgb.pred, xgb.fit)
+gc()
+
+#apply scaling on numeric features - critical step for distance based algorithms
+pp = preProcess(train, method = "range")
+train_std = predict(pp, train)
+
+#the grid search can be applied to optimize the results of SVM
+#currently this action is left to the students
+#Students can try the nnet, KNN and other distance based techniques and practice
+svm1 <- svm(Y~., data=train_std, 
+            method="C-classification", kernal="radial", 
+            gamma=0.1, cost=10)
+
+cat ("train accr = " , model.predict.accu(svm1, train_std))
+
+test_std = predict(pp, test)
+cat ("test accr =", model.predict.accu(svm1, test_std))
+
+##
+# Run the random forest
+##
+dim(train)
+trainformula <- as.formula(paste('Y',
+                                 paste(names(train[, !(names(train) %in% c("Y", Xcolnames))]),collapse=' + '),
+                                 sep=' ~ '))
+library(randomForest)
+set.seed(2106)
+tree.rf = randomForest(formula= trainformula, data =train,
+                       importance = TRUE,
+                       ntree = 100,
+                       mtry=7,
+                       strata = as.factor(train$Y),
+                       keep.inbag = TRUE)
+print(tree.rf)
+
+predict.score.rf <- predict(tree.rf, newdata =train)
+with(train, table(Y, predict.score.rf))
+
+cat ("train accr = " , model.predict.accu(tree.rf, train))
+cat ("test accr = " , model.predict.accu(tree.rf, test))
+
+##
+#Create GBM model
+##
+library(gbm)
+ntrees = 100
+gbm_model1 <- gbm(formula = trainformula, data = train, 
+                  distribution = "multinomial", n.trees = ntrees,
+                  interaction.depth = 5, shrinkage = 0.1)
+
+summary(gbm_model1)
+cat ("train accr = " , GBMModel.predict.accu(gbm_model1, train, ntrees))
+cat ("test accr = " , GBMModel.predict.accu(gbm_model1, test, ntrees))
+
+
